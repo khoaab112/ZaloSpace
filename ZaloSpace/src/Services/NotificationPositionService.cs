@@ -29,6 +29,10 @@ namespace ZaloSpaceManager.Services
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
         [DllImport("user32.dll")]
@@ -66,20 +70,6 @@ namespace ZaloSpaceManager.Services
         private static DispatcherTimer _pollTimer;
         private static string _currentPosition = "BottomRight";
 
-        // Smart Stacking Manager for avoiding notification overlap / stacking multiple notifications & calls
-        private class ActiveWindowSlot
-        {
-            public IntPtr HWnd;
-            public int Width;
-            public int Height;
-            public int TargetX;
-            public int TargetY;
-            public DateTime RegisteredTime;
-        }
-
-        private static readonly List<ActiveWindowSlot> _activeSlots = new List<ActiveWindowSlot>();
-        private static readonly object _lock = new object();
-
         public static string CurrentPosition
         {
             get { return _currentPosition; }
@@ -89,10 +79,6 @@ namespace ZaloSpaceManager.Services
         public static void SetPosition(string pos)
         {
             CurrentPosition = pos;
-            lock (_lock)
-            {
-                _activeSlots.Clear();
-            }
             CheckAndRepositionOpenNotifications();
         }
 
@@ -119,7 +105,7 @@ namespace ZaloSpaceManager.Services
 
             if (_pollTimer == null)
             {
-                _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+                _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
                 _pollTimer.Tick += delegate
                 {
                     CheckAndRepositionOpenNotifications();
@@ -145,222 +131,185 @@ namespace ZaloSpaceManager.Services
                 _pollTimer.Stop();
                 _pollTimer = null;
             }
-            lock (_lock)
-            {
-                _activeSlots.Clear();
-            }
         }
 
         private static void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hWnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
             if (idObject != 0 || hWnd == IntPtr.Zero) return;
-            TryRepositionZaloNotification(hWnd);
+            CheckAndRepositionOpenNotifications();
         }
 
-        private static void CheckAndRepositionOpenNotifications()
+        /// <summary>
+        /// 100% Dynamic Self-Healing Stacking Engine:
+        /// Scans all genuinely visible Zalo message notifications in real-time,
+        /// sorts them, and stacks them without any stale state or phantom windows.
+        /// Excludes ZaloCall, ZaloCap, ZaviMeet completely so calling is never disrupted.
+        /// </summary>
+        public static void CheckAndRepositionOpenNotifications()
         {
+            List<IntPtr> activeToasts = new List<IntPtr>();
+
             EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
             {
-                TryRepositionZaloNotification(hWnd);
+                if (!IsWindow(hWnd) || !IsWindowVisible(hWnd) || IsIconic(hWnd))
+                    return true;
+
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == 0 || pid == (uint)Process.GetCurrentProcess().Id)
+                    return true;
+
+                string procName = null;
+                try
+                {
+                    using (Process proc = Process.GetProcessById((int)pid))
+                    {
+                        procName = proc.ProcessName;
+                    }
+                }
+                catch { return true; }
+
+                if (string.IsNullOrEmpty(procName)) return true;
+
+                // 1. Exclude ZaloSpaceManager
+                if (procName.IndexOf("ZaloSpace", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+
+                // 2. CRITICAL: Never touch ZaloCall (calls), ZaloCap (capture), or ZaviMeet (meetings)
+                if (procName.IndexOf("ZaloCall", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    procName.IndexOf("ZaloCap", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    procName.IndexOf("ZaviMeet", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+
+                // 3. Must be Zalo client (Zalo, ZaloExecutable)
+                if (procName.IndexOf("zalo", StringComparison.OrdinalIgnoreCase) < 0)
+                    return true;
+
+                // 4. Exclude WPF windows
+                StringBuilder sb = new StringBuilder(256);
+                GetClassName(hWnd, sb, sb.Capacity);
+                string className = sb.ToString();
+                if (className.IndexOf("HwndWrapper", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+
+                RECT rect;
+                if (!GetWindowRect(hWnd, out rect)) return true;
+
+                int w = rect.Right - rect.Left;
+                int h = rect.Bottom - rect.Top;
+
+                // 5. Message toast filter: width ~200-520px, height ~40-200px
+                // Exclude main chat window (>= 600x400) and off-screen / ghost windows
+                if (w < 200 || w > 520 || h < 40 || h > 200)
+                    return true;
+
+                if (rect.Left < -500 || rect.Top < -500)
+                    return true;
+
+                activeToasts.Add(hWnd);
                 return true;
             }, IntPtr.Zero);
-        }
 
-        private static void CleanUpActiveSlots()
-        {
-            for (int i = _activeSlots.Count - 1; i >= 0; i--)
+            if (activeToasts.Count == 0) return;
+
+            // Sort active toasts by their current vertical position or handle
+            // so order is natural and stable
+            activeToasts.Sort(delegate(IntPtr a, IntPtr b)
             {
-                IntPtr h = _activeSlots[i].HWnd;
-                if (!IsWindow(h) || !IsWindowVisible(h))
+                RECT ra, rb;
+                GetWindowRect(a, out ra);
+                GetWindowRect(b, out rb);
+                return ra.Top.CompareTo(rb.Top);
+            });
+
+            Rect workArea = SystemParameters.WorkArea;
+            int margin = 16;
+            int gap = 8;
+
+            int sLeft = (int)workArea.Left;
+            int sTop = (int)workArea.Top;
+            int sRight = (int)workArea.Right;
+            int sBottom = (int)workArea.Bottom;
+            int sWidth = (int)workArea.Width;
+
+            bool isTop = _currentPosition.StartsWith("Top");
+
+            if (isTop)
+            {
+                // Stack downwards from top
+                int currentY = sTop + margin;
+                for (int i = 0; i < activeToasts.Count; i++)
                 {
-                    _activeSlots.RemoveAt(i);
+                    IntPtr hWnd = activeToasts[i];
+                    RECT rect;
+                    if (!GetWindowRect(hWnd, out rect)) continue;
+                    int w = rect.Right - rect.Left;
+                    int h = rect.Bottom - rect.Top;
+
+                    int targetX = GetTargetX(w, _currentPosition, sLeft, sRight, sWidth, margin);
+                    int targetY = currentY;
+
+                    // Bounds check
+                    if (targetY + h > sBottom - margin)
+                    {
+                        targetY = sBottom - h - margin;
+                    }
+
+                    if (Math.Abs(rect.Left - targetX) > 4 || Math.Abs(rect.Top - targetY) > 4)
+                    {
+                        SetWindowPos(hWnd, HWND_TOPMOST, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    }
+
+                    currentY = targetY + h + gap;
+                }
+            }
+            else
+            {
+                // Stack upwards from bottom
+                int runningBottom = sBottom - margin;
+                for (int i = activeToasts.Count - 1; i >= 0; i--)
+                {
+                    IntPtr hWnd = activeToasts[i];
+                    RECT rect;
+                    if (!GetWindowRect(hWnd, out rect)) continue;
+                    int w = rect.Right - rect.Left;
+                    int h = rect.Bottom - rect.Top;
+
+                    int targetX = GetTargetX(w, _currentPosition, sLeft, sRight, sWidth, margin);
+                    int targetY = runningBottom - h;
+
+                    // Bounds check
+                    if (targetY < sTop + margin)
+                    {
+                        targetY = sTop + margin;
+                    }
+
+                    if (Math.Abs(rect.Left - targetX) > 4 || Math.Abs(rect.Top - targetY) > 4)
+                    {
+                        SetWindowPos(hWnd, HWND_TOPMOST, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    }
+
+                    runningBottom = targetY - gap;
                 }
             }
         }
 
-        private static void TryRepositionZaloNotification(IntPtr hWnd)
+        private static int GetTargetX(int width, string position, int sLeft, int sRight, int sWidth, int margin)
         {
-            if (!IsWindow(hWnd) || !IsWindowVisible(hWnd)) return;
-
-            uint pid;
-            GetWindowThreadProcessId(hWnd, out pid);
-            if (pid == 0) return;
-
-            // 1. NEVER touch our own ZaloSpaceManager process or windows!
-            if (pid == (uint)Process.GetCurrentProcess().Id) return;
-
-            string procName = null;
-            try
+            switch (position)
             {
-                using (Process proc = Process.GetProcessById((int)pid))
-                {
-                    procName = proc.ProcessName;
-                }
-            }
-            catch { return; }
+                case "TopLeft":
+                case "BottomLeft":
+                    return sLeft + margin;
 
-            if (string.IsNullOrEmpty(procName)) return;
+                case "TopCenter":
+                case "BottomCenter":
+                    return sLeft + (sWidth - width) / 2;
 
-            // 2. Never touch ZaloSpaceManager or non-Zalo applications
-            if (procName.IndexOf("ZaloSpace", StringComparison.OrdinalIgnoreCase) >= 0)
-                return;
-
-            // 3. Skip screen capture (ZaloCap) and video meeting rooms (ZaviMeet)
-            if (procName.IndexOf("ZaloCap", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                procName.IndexOf("ZaviMeet", StringComparison.OrdinalIgnoreCase) >= 0)
-                return;
-
-            // 4. Must be a genuine Zalo process (Zalo, ZaloCall, ZaloExecutable)
-            if (procName.IndexOf("zalo", StringComparison.OrdinalIgnoreCase) < 0)
-                return;
-
-            // 5. Exclude WPF windows (popups, context menus, tooltips)
-            StringBuilder sb = new StringBuilder(256);
-            GetClassName(hWnd, sb, sb.Capacity);
-            string className = sb.ToString();
-            if (className.IndexOf("HwndWrapper", StringComparison.OrdinalIgnoreCase) >= 0)
-                return;
-
-            RECT rect;
-            if (!GetWindowRect(hWnd, out rect)) return;
-
-            int w = rect.Right - rect.Left;
-            int h = rect.Bottom - rect.Top;
-
-            // 6. Comprehensive filter for Zalo notifications & Call popups:
-            // - Toast message: width ~200-540px, height ~40-240px
-            // - Incoming Call card (ZaloCall): width ~240-480px, height ~180-360px
-            // Exclude main chat window which is >= 600x400
-            if (w < 200 || w > 540 || h < 40 || h > 380)
-                return;
-
-            if (w >= 600 || h >= 400)
-                return;
-
-            int targetX;
-            int targetY;
-            CalculateStackedCoordinates(hWnd, w, h, _currentPosition, out targetX, out targetY);
-
-            // Check if already positioned at target (within 6px tolerance)
-            if (Math.Abs(rect.Left - targetX) <= 6 && Math.Abs(rect.Top - targetY) <= 6)
-                return;
-
-            SetWindowPos(hWnd, HWND_TOPMOST, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        }
-
-        public static void CalculateStackedCoordinates(IntPtr hWnd, int width, int height, string position, out int targetX, out int targetY)
-        {
-            lock (_lock)
-            {
-                CleanUpActiveSlots();
-
-                // If this window already has an assigned slot and hasn't changed position mode:
-                ActiveWindowSlot existing = null;
-                for (int i = 0; i < _activeSlots.Count; i++)
-                {
-                    if (_activeSlots[i].HWnd == hWnd)
-                    {
-                        existing = _activeSlots[i];
-                        break;
-                    }
-                }
-
-                Rect workArea = SystemParameters.WorkArea;
-                int margin = 16;
-                int gap = 10; // spacing between stacked notifications
-
-                int sLeft = (int)workArea.Left;
-                int sTop = (int)workArea.Top;
-                int sRight = (int)workArea.Right;
-                int sBottom = (int)workArea.Bottom;
-                int sWidth = (int)workArea.Width;
-
-                // Determine base horizontal X
-                int baseX;
-                switch (position)
-                {
-                    case "TopLeft":
-                    case "BottomLeft":
-                        baseX = sLeft + margin;
-                        break;
-
-                    case "TopCenter":
-                    case "BottomCenter":
-                        baseX = sLeft + (sWidth - width) / 2;
-                        break;
-
-                    case "TopRight":
-                    case "BottomRight":
-                    default:
-                        baseX = sRight - width - margin;
-                        break;
-                }
-
-                // If already assigned, keep its position so it doesn't jump
-                if (existing != null)
-                {
-                    targetX = baseX;
-                    targetY = existing.TargetY;
-                    existing.Width = width;
-                    existing.Height = height;
-                    return;
-                }
-
-                // Calculate stacked Y for new window
-                bool isTop = position.StartsWith("Top");
-                int calculatedY;
-
-                if (isTop)
-                {
-                    // Stack from top down: window 1 at top, window 2 below window 1, etc.
-                    calculatedY = sTop + margin;
-                    foreach (ActiveWindowSlot slot in _activeSlots)
-                    {
-                        int nextSlotY = slot.TargetY + slot.Height + gap;
-                        if (nextSlotY > calculatedY)
-                        {
-                            calculatedY = nextSlotY;
-                        }
-                    }
-
-                    // Bounds check
-                    if (calculatedY + height > sBottom - margin)
-                    {
-                        calculatedY = sBottom - height - margin;
-                    }
-                }
-                else
-                {
-                    // Stack from bottom up: window 1 at bottom, window 2 above window 1, etc.
-                    calculatedY = sBottom - height - margin;
-                    foreach (ActiveWindowSlot slot in _activeSlots)
-                    {
-                        int nextSlotY = slot.TargetY - height - gap;
-                        if (nextSlotY < calculatedY)
-                        {
-                            calculatedY = nextSlotY;
-                        }
-                    }
-
-                    // Bounds check
-                    if (calculatedY < sTop + margin)
-                    {
-                        calculatedY = sTop + margin;
-                    }
-                }
-
-                targetX = baseX;
-                targetY = calculatedY;
-
-                _activeSlots.Add(new ActiveWindowSlot
-                {
-                    HWnd = hWnd,
-                    Width = width,
-                    Height = height,
-                    TargetX = targetX,
-                    TargetY = targetY,
-                    RegisteredTime = DateTime.Now
-                });
+                case "TopRight":
+                case "BottomRight":
+                default:
+                    return sRight - width - margin;
             }
         }
     }

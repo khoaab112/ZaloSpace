@@ -458,10 +458,10 @@ namespace ZaloSpaceManager.Services
                 {
                     try
                     {
-                        // Check if dstAsar still contains unpatched com.vng.zalo, buggy loop, or unisolated call pipes
                         byte[] b = File.ReadAllBytes(dstAsar);
                         string s = Encoding.ASCII.GetString(b);
-                        if (s.Contains("com.vng.zalo") || s.Contains("if (true)") || s.Contains("0===e?X():") || s.Contains("PipeZCallSend"))
+                        string expectedPipe = "PipeCall_S_" + profileId.PadLeft(2, '0').Substring(0, 2);
+                        if (s.Contains("com.vng.zalo") || s.Contains("if (true)") || s.Contains("0===e?X():") || s.Contains("PipeZCallSend") || !s.Contains(expectedPipe))
                         {
                             needPatch = true;
                         }
