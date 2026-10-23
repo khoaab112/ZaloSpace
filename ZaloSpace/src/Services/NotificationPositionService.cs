@@ -16,6 +16,10 @@ namespace ZaloSpaceManager.Services
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
 
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmGetWindowAttribute(IntPtr hWnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+        private const int DWMWA_CLOAKED = 14;
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
@@ -59,16 +63,25 @@ namespace ZaloSpaceManager.Services
         private const uint WINEVENT_OUTOFPROCESS = 0x0000;
         private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
-        private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private const uint SWP_NOSIZE = 0x0001;
         private const uint SWP_NOACTIVATE = 0x0010;
-        private const uint SWP_SHOWWINDOW = 0x0040;
+        private const uint SWP_NOZORDER = 0x0004;
 
         private static IntPtr _hookShow = IntPtr.Zero;
         private static IntPtr _hookLoc = IntPtr.Zero;
         private static WinEventDelegate _eventDelegate;
         private static DispatcherTimer _pollTimer;
         private static string _currentPosition = "BottomRight";
+
+        private class ToastItem
+        {
+            public IntPtr Hwnd;
+            public int Width;
+            public int Height;
+            public bool IsCall;
+            public int Top;
+            public int Left;
+        }
 
         public static string CurrentPosition
         {
@@ -140,18 +153,24 @@ namespace ZaloSpaceManager.Services
         }
 
         /// <summary>
-        /// 100% Dynamic Self-Healing Stacking Engine:
-        /// Scans all genuinely visible Zalo message notifications in real-time,
-        /// sorts them, and stacks them without any stale state or phantom windows.
-        /// Excludes ZaloCall, ZaloCap, ZaviMeet completely so calling is never disrupted.
+        /// Real-Time Self-Healing Notification & Call Alert Repositioning Engine:
+        /// - Detects both regular chat toasts (~82px) and incoming call alerts (~180px).
+        /// - Incoming calls receive priority #1: always placed at primary anchor corner, never subordinated.
+        /// - Strips SWP_SHOWWINDOW so closing/fading notifications are never forced open as phantom slots.
+        /// - Filters out DWM cloaked and off-screen ghost windows to eliminate mid-air floating bugs.
         /// </summary>
         public static void CheckAndRepositionOpenNotifications()
         {
-            List<IntPtr> activeToasts = new List<IntPtr>();
+            List<ToastItem> items = new List<ToastItem>();
 
             EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
             {
                 if (!IsWindow(hWnd) || !IsWindowVisible(hWnd) || IsIconic(hWnd))
+                    return true;
+
+                // Ignore cloaked windows (hidden or animating out by DWM/Electron)
+                int cloaked = 0;
+                if (DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, out cloaked, sizeof(int)) == 0 && cloaked != 0)
                     return true;
 
                 uint pid;
@@ -175,7 +194,7 @@ namespace ZaloSpaceManager.Services
                 if (procName.IndexOf("ZaloSpace", StringComparison.OrdinalIgnoreCase) >= 0)
                     return true;
 
-                // 2. CRITICAL: Never touch ZaloCall (calls), ZaloCap (capture), or ZaviMeet (meetings)
+                // 2. Never touch ZaloCall native binary, ZaloCap, or ZaviMeet
                 if (procName.IndexOf("ZaloCall", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     procName.IndexOf("ZaloCap", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     procName.IndexOf("ZaviMeet", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -198,28 +217,41 @@ namespace ZaloSpaceManager.Services
                 int w = rect.Right - rect.Left;
                 int h = rect.Bottom - rect.Top;
 
-                // 5. Message toast filter: width ~200-520px, height ~40-200px
-                // Exclude main chat window (>= 600x400) and off-screen / ghost windows
-                if (w < 200 || w > 520 || h < 40 || h > 200)
+                // 5. Toast / Call alert filter: width ~200-520px, height ~40-300px
+                // Main chat window is >= 600x400
+                if (w < 200 || w > 520 || h < 40 || h > 300)
                     return true;
 
-                if (rect.Left < -500 || rect.Top < -500)
+                // Ignore off-screen ghost windows
+                if (rect.Right <= 0 || rect.Bottom <= 0 || rect.Left < -50 || rect.Top < -50)
                     return true;
 
-                activeToasts.Add(hWnd);
+                bool isCall = (h >= 150);
+
+                items.Add(new ToastItem
+                {
+                    Hwnd = hWnd,
+                    Width = w,
+                    Height = h,
+                    IsCall = isCall,
+                    Top = rect.Top,
+                    Left = rect.Left
+                });
+
                 return true;
             }, IntPtr.Zero);
 
-            if (activeToasts.Count == 0) return;
+            if (items.Count == 0) return;
 
-            // Sort active toasts by their current vertical position or handle
-            // so order is natural and stable
-            activeToasts.Sort(delegate(IntPtr a, IntPtr b)
+            // Sorting Strategy:
+            // 1. Active incoming calls (IsCall == true) MUST ALWAYS BE SLOT 0!
+            //    A ringing call is urgent; it must occupy the prime anchor position.
+            // 2. Regular message toasts follow in natural order.
+            items.Sort(delegate(ToastItem a, ToastItem b)
             {
-                RECT ra, rb;
-                GetWindowRect(a, out ra);
-                GetWindowRect(b, out rb);
-                return ra.Top.CompareTo(rb.Top);
+                if (a.IsCall && !b.IsCall) return -1;
+                if (!a.IsCall && b.IsCall) return 1;
+                return a.Top.CompareTo(b.Top);
             });
 
             Rect workArea = SystemParameters.WorkArea;
@@ -236,57 +268,51 @@ namespace ZaloSpaceManager.Services
 
             if (isTop)
             {
-                // Stack downwards from top
+                // Stack downwards from top:
+                // Slot 0 (Incoming Call or newest toast) is placed at the top margin.
+                // Subsequent toasts stack below it.
                 int currentY = sTop + margin;
-                for (int i = 0; i < activeToasts.Count; i++)
+                for (int i = 0; i < items.Count; i++)
                 {
-                    IntPtr hWnd = activeToasts[i];
-                    RECT rect;
-                    if (!GetWindowRect(hWnd, out rect)) continue;
-                    int w = rect.Right - rect.Left;
-                    int h = rect.Bottom - rect.Top;
-
-                    int targetX = GetTargetX(w, _currentPosition, sLeft, sRight, sWidth, margin);
+                    var item = items[i];
+                    int targetX = GetTargetX(item.Width, _currentPosition, sLeft, sRight, sWidth, margin);
                     int targetY = currentY;
 
-                    // Bounds check
-                    if (targetY + h > sBottom - margin)
+                    if (targetY + item.Height > sBottom - margin)
                     {
-                        targetY = sBottom - h - margin;
+                        targetY = sBottom - item.Height - margin;
                     }
 
-                    if (Math.Abs(rect.Left - targetX) > 4 || Math.Abs(rect.Top - targetY) > 4)
+                    if (Math.Abs(item.Left - targetX) > 4 || Math.Abs(item.Top - targetY) > 4)
                     {
-                        SetWindowPos(hWnd, HWND_TOPMOST, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        // Use SWP_NOZORDER, NO SWP_SHOWWINDOW
+                        SetWindowPos(item.Hwnd, IntPtr.Zero, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
                     }
 
-                    currentY = targetY + h + gap;
+                    currentY = targetY + item.Height + gap;
                 }
             }
             else
             {
-                // Stack upwards from bottom
+                // Stack upwards from bottom:
+                // Slot 0 (Incoming Call or primary toast) is placed at the bottom margin.
+                // Subsequent toasts stack above it.
                 int runningBottom = sBottom - margin;
-                for (int i = activeToasts.Count - 1; i >= 0; i--)
+                for (int i = 0; i < items.Count; i++)
                 {
-                    IntPtr hWnd = activeToasts[i];
-                    RECT rect;
-                    if (!GetWindowRect(hWnd, out rect)) continue;
-                    int w = rect.Right - rect.Left;
-                    int h = rect.Bottom - rect.Top;
+                    var item = items[i];
+                    int targetX = GetTargetX(item.Width, _currentPosition, sLeft, sRight, sWidth, margin);
+                    int targetY = runningBottom - item.Height;
 
-                    int targetX = GetTargetX(w, _currentPosition, sLeft, sRight, sWidth, margin);
-                    int targetY = runningBottom - h;
-
-                    // Bounds check
                     if (targetY < sTop + margin)
                     {
                         targetY = sTop + margin;
                     }
 
-                    if (Math.Abs(rect.Left - targetX) > 4 || Math.Abs(rect.Top - targetY) > 4)
+                    if (Math.Abs(item.Left - targetX) > 4 || Math.Abs(item.Top - targetY) > 4)
                     {
-                        SetWindowPos(hWnd, HWND_TOPMOST, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                        // Use SWP_NOZORDER, NO SWP_SHOWWINDOW
+                        SetWindowPos(item.Hwnd, IntPtr.Zero, targetX, targetY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
                     }
 
                     runningBottom = targetY - gap;
