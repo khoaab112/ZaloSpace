@@ -171,7 +171,13 @@ namespace ZaloSpaceManager.Services
             if (procName.IndexOf("ZaloSpace", StringComparison.OrdinalIgnoreCase) >= 0)
                 return;
 
-            // Must be genuine Zalo PC process
+            // Never touch ZaloCall (call UI window), ZaloCap (screen capture), or ZaviMeet (video meeting)
+            if (procName.IndexOf("ZaloCall", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                procName.IndexOf("ZaloCap", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                procName.IndexOf("ZaviMeet", StringComparison.OrdinalIgnoreCase) >= 0)
+                return;
+
+            // Must be genuine Zalo PC main process
             if (procName.IndexOf("zalo", StringComparison.OrdinalIgnoreCase) < 0)
                 return;
 

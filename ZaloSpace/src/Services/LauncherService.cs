@@ -458,10 +458,10 @@ namespace ZaloSpaceManager.Services
                 {
                     try
                     {
-                        // Check if dstAsar still contains unpatched com.vng.zalo or buggy if (true)
+                        // Check if dstAsar still contains unpatched com.vng.zalo, buggy loop, or unisolated call pipes
                         byte[] b = File.ReadAllBytes(dstAsar);
                         string s = Encoding.ASCII.GetString(b);
-                        if (s.Contains("com.vng.zalo") || s.Contains("if (true)") || s.Contains("0===e?X():"))
+                        if (s.Contains("com.vng.zalo") || s.Contains("if (true)") || s.Contains("0===e?X():") || s.Contains("PipeZCallSend"))
                         {
                             needPatch = true;
                         }
@@ -544,6 +544,46 @@ namespace ZaloSpaceManager.Services
                         {
                             for (int j = 0; j < 10; j++) bytes[i + j] = newCapLoop[j];
                             i += 9;
+                        }
+                    }
+
+                    // 4. Patch ZaloCall IPC named pipes so each clone has independent audio/video call communication
+                    // Zalo default is "\\\\.\\pipe\\PipeZCallSend" (13 chars) and "\\\\.\\pipe\\PipeZCallRecv" (13 chars)
+                    // If multiple instances share the same pipes, secondary instances fail with EADDRINUSE,
+                    // causing incoming calls to never pop up on screen!
+                    string pSuffix = profileId.PadLeft(2, '0').Substring(0, 2); // e.g. "02", "03"
+                    string newPipeSend = "PipeCall_S_" + pSuffix; // exactly 13 chars
+                    string newPipeRecv = "PipeCall_R_" + pSuffix; // exactly 13 chars
+
+                    byte[] oldSendBytes = Encoding.ASCII.GetBytes("PipeZCallSend");
+                    byte[] newSendBytes = Encoding.ASCII.GetBytes(newPipeSend);
+                    for (int i = 0; i <= bytes.Length - 13; i++)
+                    {
+                        bool match = true;
+                        for (int j = 0; j < 13; j++)
+                        {
+                            if (bytes[i + j] != oldSendBytes[j]) { match = false; break; }
+                        }
+                        if (match)
+                        {
+                            for (int j = 0; j < 13; j++) bytes[i + j] = newSendBytes[j];
+                            i += 12;
+                        }
+                    }
+
+                    byte[] oldRecvBytes = Encoding.ASCII.GetBytes("PipeZCallRecv");
+                    byte[] newRecvBytes = Encoding.ASCII.GetBytes(newPipeRecv);
+                    for (int i = 0; i <= bytes.Length - 13; i++)
+                    {
+                        bool match = true;
+                        for (int j = 0; j < 13; j++)
+                        {
+                            if (bytes[i + j] != oldRecvBytes[j]) { match = false; break; }
+                        }
+                        if (match)
+                        {
+                            for (int j = 0; j < 13; j++) bytes[i + j] = newRecvBytes[j];
+                            i += 12;
                         }
                     }
                 }
