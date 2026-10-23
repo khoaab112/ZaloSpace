@@ -161,6 +161,20 @@ namespace ZaloSpaceManager.UI
                 ProfileService.SaveProfiles(_profiles);
             }
             catch { }
+
+            // Synchronize and repair AutoStart registry entries for profiles
+            try
+            {
+                string mgrExe = AutoStartService.GetManagerExecutablePath();
+                foreach (Profile p in _profiles)
+                {
+                    if (p.AutoStart)
+                    {
+                        AutoStartService.SetProfileAutoStart(p.Id, string.Format("\"{0}\" --launch {1}", mgrExe, p.Id), true);
+                    }
+                }
+            }
+            catch { }
         }
 
         private void EnsureDefaultProfileIfEmpty()
@@ -761,7 +775,7 @@ namespace ZaloSpaceManager.UI
             chkAuto.Checked += delegate
             {
                 profile.AutoStart = true;
-                string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                string exePath = AutoStartService.GetManagerExecutablePath();
                 AutoStartService.SetProfileAutoStart(profile.Id, string.Format("\"{0}\" --launch {1}", exePath, profile.Id), true);
                 ProfileService.SaveProfiles(_profiles);
             };

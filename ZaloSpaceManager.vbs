@@ -1,2 +1,3 @@
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -Sta -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""c:\Users\khoaz\Downloads\tesst\ZaloSpace\Launch.ps1""", 0, False
+strDir = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
+WshShell.Run Chr(34) & strDir & "\ZaloSpaceManager.exe" & Chr(34), 1, False

@@ -18,67 +18,83 @@ namespace ZaloSpaceManager
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
-        private static Mutex _singleInstanceMutex = null;
-
         [STAThread]
         public static void Main(string[] args)
         {
+            // 1. Silent launch for Windows Startup / Auto-start (--launch <profileId>)
             if (args != null && args.Length >= 2 && args[0].Equals("--launch", StringComparison.OrdinalIgnoreCase))
             {
-                // Silent launch for auto-start
-                string profileId = args[1];
-                AppSettings settings = ProfileService.LoadSettings();
-                ZaloInfo info = null;
-                if (!string.IsNullOrEmpty(settings.ZaloPath))
+                try
                 {
-                    info = ZaloDetector.ValidatePath(settings.ZaloPath);
-                }
-                if (info == null || !info.IsValid)
-                {
-                    info = ZaloDetector.AutoDetect();
-                }
-
-                if (info != null && info.IsValid)
-                {
-                    var profiles = ProfileService.LoadProfiles();
-                    foreach (var p in profiles)
+                    string profileId = args[1];
+                    AppSettings settings = ProfileService.LoadSettings();
+                    ZaloInfo info = null;
+                    if (!string.IsNullOrEmpty(settings.ZaloPath))
                     {
-                        if (p.Id == profileId)
+                        info = ZaloDetector.ValidatePath(settings.ZaloPath);
+                    }
+                    if (info == null || !info.IsValid)
+                    {
+                        info = ZaloDetector.AutoDetect();
+                    }
+
+                    if (info != null && info.IsValid)
+                    {
+                        var profiles = ProfileService.LoadProfiles();
+                        foreach (var p in profiles)
                         {
-                            LauncherService.LaunchProfile(p, info.ExePath);
-                            break;
+                            if (p.Id == profileId)
+                            {
+                                LauncherService.LaunchProfile(p, info.ExePath);
+                                break;
+                            }
                         }
                     }
                 }
+                catch { }
                 return;
             }
 
-            // Normal launch: Enforce single instance to prevent duplicate background manager processes!
-            bool createdNew;
-            _singleInstanceMutex = new Mutex(true, "ZaloSpaceManager_SingleInstance_Mutex_Khoa", out createdNew);
-            if (!createdNew)
+            // 2. Normal GUI launch: Bring existing window to front if already open
+            try
             {
-                // Bring existing manager window to front if running
                 Process current = Process.GetCurrentProcess();
-                foreach (Process p in Process.GetProcesses())
+                Process[] procs = Process.GetProcessesByName(current.ProcessName);
+                foreach (Process p in procs)
                 {
-                    if (p.Id != current.Id && p.MainWindowTitle.IndexOf("Zalo Space Manager", StringComparison.OrdinalIgnoreCase) >= 0)
+                    if (p.Id != current.Id)
                     {
-                        ShowWindow(p.MainWindowHandle, 9 /* SW_RESTORE */);
-                        SetForegroundWindow(p.MainWindowHandle);
-                        return;
+                        try
+                        {
+                            if (p.MainWindowHandle != IntPtr.Zero)
+                            {
+                                ShowWindow(p.MainWindowHandle, 9 /* SW_RESTORE */);
+                                SetForegroundWindow(p.MainWindowHandle);
+                                return; // Window already exists and was brought to front
+                            }
+                        }
+                        catch { }
                     }
                 }
-                return;
             }
+            catch { }
 
-            Program app = new Program();
-            MainWindow win = new MainWindow();
-            win.ShowDialog();
-
-            if (_singleInstanceMutex != null)
+            // 3. Launch application safely
+            try
             {
-                try { _singleInstanceMutex.ReleaseMutex(); } catch { }
+                Program app = new Program();
+                MainWindow win = new MainWindow();
+                app.Run(win);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    string log = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "startup_error.log");
+                    File.WriteAllText(log, ex.ToString());
+                }
+                catch { }
+                MessageBox.Show("Lỗi khởi động Zalo Space Manager:\n" + ex.Message, "Zalo Space Manager", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

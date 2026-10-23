@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using Microsoft.Win32;
 
 namespace ZaloSpaceManager.Services
@@ -6,6 +8,32 @@ namespace ZaloSpaceManager.Services
     public static class AutoStartService
     {
         private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+        public static string GetManagerExecutablePath()
+        {
+            try
+            {
+                string path = Process.GetCurrentProcess().MainModule.FileName;
+                if (!string.IsNullOrEmpty(path) && File.Exists(path) && path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    return path;
+                }
+            }
+            catch { }
+
+            try
+            {
+                string baseExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ZaloSpaceManager.exe");
+                if (File.Exists(baseExe)) return baseExe;
+
+                string parentExe = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "ZaloSpaceManager.exe");
+                string full = Path.GetFullPath(parentExe);
+                if (File.Exists(full)) return full;
+            }
+            catch { }
+
+            return @"c:\Users\khoaz\Downloads\tesst\ZaloSpaceManager.exe";
+        }
 
         public static void SetProfileAutoStart(string profileId, string launcherCmd, bool enable)
         {
@@ -17,7 +45,10 @@ namespace ZaloSpaceManager.Services
                     string keyName = "ZaloSpace_" + profileId;
                     if (enable)
                     {
-                        key.SetValue(keyName, launcherCmd);
+                        if (!string.IsNullOrEmpty(launcherCmd) && !launcherCmd.StartsWith("\"\""))
+                        {
+                            key.SetValue(keyName, launcherCmd);
+                        }
                     }
                     else
                     {
@@ -40,7 +71,9 @@ namespace ZaloSpaceManager.Services
                     if (key == null) return false;
                     string keyName = "ZaloSpace_" + profileId;
                     object val = key.GetValue(keyName);
-                    return val != null;
+                    if (val == null) return false;
+                    string s = val.ToString().Trim();
+                    return !string.IsNullOrEmpty(s) && !s.StartsWith("\"\"") && !s.StartsWith("--launch");
                 }
             }
             catch
