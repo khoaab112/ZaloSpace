@@ -9,6 +9,12 @@ namespace ZaloSpaceManager.Services
     public class AppSettings
     {
         public string ZaloPath { get; set; }
+        public string NotificationPosition { get; set; }
+
+        public AppSettings()
+        {
+            NotificationPosition = "BottomRight";
+        }
     }
 
     public static class ProfileService
@@ -35,6 +41,9 @@ namespace ZaloSpaceManager.Services
                 {
                     string json = File.ReadAllText(SettingsFile, Encoding.UTF8);
                     settings.ZaloPath = ExtractJsonField(json, "ZaloPath");
+                    string pos = ExtractJsonField(json, "NotificationPosition");
+                    if (!string.IsNullOrEmpty(pos))
+                        settings.NotificationPosition = pos;
                 }
                 catch { }
             }
@@ -47,7 +56,8 @@ namespace ZaloSpaceManager.Services
             {
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("{");
-                sb.AppendFormat("  \"ZaloPath\": \"{0}\"\n", EscapeJson(settings.ZaloPath));
+                sb.AppendFormat("  \"ZaloPath\": \"{0}\",\n", EscapeJson(settings.ZaloPath));
+                sb.AppendFormat("  \"NotificationPosition\": \"{0}\"\n", EscapeJson(settings.NotificationPosition ?? "BottomRight"));
                 sb.AppendLine("}");
                 File.WriteAllText(SettingsFile, sb.ToString(), Encoding.UTF8);
             }

@@ -75,17 +75,17 @@ namespace ZaloSpaceManager.UI
 
             Border rootBorder = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(22, 25, 34)),
+                Background = Brushes.White,
                 BorderBrush = new SolidColorBrush(accentColor),
                 BorderThickness = new Thickness(1.5),
                 CornerRadius = new CornerRadius(14),
                 Margin = new Thickness(12),
                 Effect = new DropShadowEffect
                 {
-                    Color = Colors.Black,
+                    Color = Color.FromRgb(15, 23, 42),
                     BlurRadius = 24,
                     ShadowDepth = 6,
-                    Opacity = 0.75
+                    Opacity = 0.18
                 }
             };
 
@@ -129,7 +129,7 @@ namespace ZaloSpaceManager.UI
                 Text = title,
                 FontSize = 16,
                 FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White,
+                Foreground = new SolidColorBrush(Color.FromRgb(15, 23, 42)),
                 VerticalAlignment = VerticalAlignment.Center
             };
             Grid.SetColumn(txtTitle, 1);
@@ -141,7 +141,7 @@ namespace ZaloSpaceManager.UI
                 Width = 28,
                 Height = 28,
                 FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(140, 145, 160)),
+                Foreground = new SolidColorBrush(Color.FromRgb(100, 116, 139)),
                 Background = Brushes.Transparent,
                 BorderBrush = Brushes.Transparent,
                 Cursor = Cursors.Hand,
@@ -163,7 +163,7 @@ namespace ZaloSpaceManager.UI
             {
                 Text = message,
                 FontSize = 13.5,
-                Foreground = new SolidColorBrush(Color.FromRgb(215, 220, 235)),
+                Foreground = new SolidColorBrush(Color.FromRgb(51, 65, 85)),
                 TextWrapping = TextWrapping.Wrap,
                 LineHeight = 20,
                 Margin = new Thickness(0, 16, 0, 20)
@@ -187,9 +187,9 @@ namespace ZaloSpaceManager.UI
                     Height = 34,
                     FontSize = 13,
                     FontWeight = FontWeights.SemiBold,
-                    Foreground = new SolidColorBrush(Color.FromRgb(180, 185, 200)),
-                    Background = new SolidColorBrush(Color.FromRgb(36, 40, 52)),
-                    BorderBrush = new SolidColorBrush(Color.FromRgb(60, 65, 80)),
+                    Foreground = new SolidColorBrush(Color.FromRgb(71, 85, 105)),
+                    Background = new SolidColorBrush(Color.FromRgb(241, 245, 249)),
+                    BorderBrush = new SolidColorBrush(Color.FromRgb(203, 213, 225)),
                     BorderThickness = new Thickness(1),
                     Cursor = Cursors.Hand,
                     Margin = new Thickness(0, 0, 10, 0)
